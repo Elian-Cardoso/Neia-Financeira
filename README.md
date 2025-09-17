@@ -26,6 +26,7 @@
     .delete-btn { background: #e74c3c; }
     .sort-btn { display: block; margin: 10px auto; padding: 10px 15px; background: #2ecc71; color: #fff; border: none; border-radius: 4px; cursor: pointer; }
     .sort-btn:hover { background: #27ae60; }
+    .small { font-size: 12px; color: #666; }
   </style>
 </head>
 <body>
@@ -46,6 +47,7 @@
     <input type="text" v-model="newUser.name" placeholder="Nome" required>
     <input type="email" v-model="newUser.email" placeholder="Email" required>
     <input type="password" v-model="newUser.password" placeholder="Senha" required>
+    <div class="small">Senha: mínimo 6 caracteres e pelo menos 1 número</div>
     <input type="text" v-model="newUser.phone" placeholder="Telefone">
     <input type="number" v-model="newUser.age" placeholder="Idade">
     <button type="submit">Cadastrar</button>
@@ -101,30 +103,45 @@ new Vue({
     searchQuery: ''
   },
   created() {
-    if (this.isAdmin) this.fetchUsers();
+    // se já houver usuário logado em localStorage, ativa isAdmin se aplicável e carrega lista
+    try {
+      const saved = localStorage.getItem('loggedUser');
+      if (saved) {
+        const u = JSON.parse(saved);
+        this.isAdmin = !!u.isAdmin;
+        // se for admin, carrega usuários do JSON Server
+        if (this.isAdmin) this.fetchUsers();
+      }
+    } catch (e) {
+      console.warn("Erro lendo localStorage:", e);
+    }
   },
   computed: {
     filteredUsers() {
       if (!this.searchQuery) return this.users;
       const q = this.searchQuery.toLowerCase();
       return this.users.filter(u =>
-        u.name.toLowerCase().includes(q) || u.email.toLowerCase().includes(q)
+        (u.name || '').toLowerCase().includes(q) || (u.email || '').toLowerCase().includes(q)
       );
     }
   },
   methods: {
+    // busca todos usuários do JSON Server
     async fetchUsers() {
       try {
         const res = await axios.get('/users');
         this.users = res.data.map(u => ({ ...u, editing: false }));
       } catch (err) {
         console.error(err);
-        this.showMessage("Erro ao carregar usuários!", "error");
+        this.showMessage("Erro ao carregar usuários (verifique o JSON Server).", "error");
       }
     },
+
+    // valida e-mail simples
     isValidEmail(email) {
       return /\S+@\S+\.\S+/.test(email);
     },
+    // validação simples de senha forte
     isStrongPassword(password) {
       return /^(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d]{6,}$/.test(password);
     },
@@ -133,51 +150,58 @@ new Vue({
       this.messageType = type;
       setTimeout(() => { this.message = ''; }, 3000);
     },
+
+    // --- Cadastro: POST /users no JSON Server
     async addUser() {
-      if (!this.newUser.name || !this.newUser.email || !this.newUser.password)
+      if (!this.newUser.name || !this.newUser.email || !this.newUser.password) {
         return this.showMessage("Preencha os campos obrigatórios!", "error");
+      }
 
       const emailNorm = this.newUser.email.trim().toLowerCase();
-      if (!this.isValidEmail(emailNorm))
+      if (!this.isValidEmail(emailNorm)) {
         return this.showMessage("Digite um e-mail válido!", "error");
-
-      if (!this.isStrongPassword(this.newUser.password))
+      }
+      if (!this.isStrongPassword(this.newUser.password)) {
         return this.showMessage("Senha deve ter ao menos 6 caracteres e 1 número!", "error");
+      }
 
       try {
+        // verifica duplicata
         const check = await axios.get(`/users?email=${encodeURIComponent(emailNorm)}`);
         if (check.data && check.data.length) {
           return this.showMessage("E-mail já cadastrado!", "error");
         }
 
+        // payload com isAdmin=false por padrão (admin deve estar no db.json)
         const payload = {
           name: this.newUser.name.trim(),
           email: emailNorm,
           password: this.newUser.password,
           phone: this.newUser.phone ? this.newUser.phone.trim() : '',
-          age: this.newUser.age || ''
+          age: this.newUser.age || '',
+          isAdmin: false
         };
 
+        // salva no JSON Server
         const res = await axios.post('/users', payload);
         const savedUser = res.data;
 
-        if (!this.isAdmin) {
-          this.showMessage("Cadastro realizado! Redirecionando...", "success");
-          setTimeout(() => {
-            localStorage.setItem('loggedUser', JSON.stringify(savedUser));
-            window.location.href = "perfil.html";
-          }, 1500);
-        } else {
-          this.users.push({ savedUser, editing: false });
-          this.showMessage("Usuário cadastrado com sucesso!", "success");
-        }
+        // salva sessão e redireciona para perfil
+        localStorage.setItem('loggedUser', JSON.stringify(savedUser));
+        this.showMessage("Cadastro realizado! Redirecionando...", "success");
+        setTimeout(() => {
+          window.location.href = "perfil.html";
+        }, 1200);
 
+        // limpa formulário
         this.newUser = { name: '', email: '', password: '', phone: '', age: '' };
       } catch (err) {
         console.error(err);
-        this.showMessage("Erro ao cadastrar usuário!", "error");
+        this.showMessage("Erro ao cadastrar usuário! (verifique JSON Server)", "error");
       }
     },
+
+    // --- Login: GET /users?email=...
     async loginUser() {
       const emailNorm = this.loginEmail.trim().toLowerCase();
       const passwordInput = this.loginPassword || '';
@@ -194,22 +218,34 @@ new Vue({
       try {
         const res = await axios.get(`/users?email=${encodeURIComponent(emailNorm)}`);
         if (!res.data || res.data.length === 0 || res.data[0].password !== passwordInput) {
+          // não revela se email ou senha estão errados
           this.showMessage("Email ou senha incorretos!", "error");
           return;
         }
 
         const user = res.data[0];
+
+        // salva sessão (localStorage) e define isAdmin conforme o registro
         localStorage.setItem('loggedUser', JSON.stringify(user));
+        this.isAdmin = !!user.isAdmin;
 
         this.showMessage("Login realizado! Redirecionando...", "success");
         setTimeout(() => {
-          window.location.href = "perfil.html";
-        }, 1200);
+          // se admin, recarrega lista local e permanece na página para gerenciar
+          if (this.isAdmin) {
+            this.fetchUsers();
+            this.mode = 'login'; // mantém a interface, admin pode ver lista abaixo
+          } else {
+            window.location.href = "perfil.html";
+          }
+        }, 900);
       } catch (err) {
         console.error(err);
-        this.showMessage("Erro ao entrar!", "error");
+        this.showMessage("Erro ao entrar! (verifique JSON Server)", "error");
       }
     },
+
+    // Atualiza o usuário via PUT /users/:id
     async updateUser(user) {
       try {
         await axios.put(`/users/${user.id}`, {
@@ -220,25 +256,45 @@ new Vue({
           password: user.password || ''
         });
         user.editing = false;
-        this.showMessage("Usuário atualizado com sucesso!", "success");
+        this.showMessage("Usuário atualizado com sucesso!", "success');
+
+        // Se o admin atualizou a própria conta, atualiza localStorage
+        const saved = JSON.parse(localStorage.getItem('loggedUser') || 'null');
+        if (saved && saved.id === user.id) {
+          localStorage.setItem('loggedUser', JSON.stringify({ ...saved, ...user }));
+        }
+
+        // recarrega lista
+        await this.fetchUsers();
       } catch (err) {
         console.error(err);
         this.showMessage("Erro ao atualizar usuário!", "error");
       }
     },
+
+    // Deleta usuário via DELETE /users/:id
     async deleteUser(id) {
       if (!confirm("Tem certeza que deseja excluir este usuário?")) return;
       try {
         await axios.delete(`/users/${id}`);
         this.users = this.users.filter(u => u.id !== id);
         this.showMessage("Usuário excluído com sucesso!", "success");
+
+        // se excluiu o próprio admin logado, limpa sessão
+        const saved = JSON.parse(localStorage.getItem('loggedUser') || 'null');
+        if (saved && saved.id === id) {
+          localStorage.removeItem('loggedUser');
+          this.isAdmin = false;
+          this.showMessage("Você excluiu sua conta — sessão encerrada.", "success");
+        }
       } catch (err) {
         console.error(err);
         this.showMessage("Erro ao excluir usuário!", "error");
       }
     },
+
     sortUsers() {
-      this.users.sort((a, b) => a.name.localeCompare(b.name));
+      this.users.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
     }
   }
 });
